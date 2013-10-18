@@ -19,8 +19,8 @@ class RelationType(ModelSQL, ModelView):
     def __setup__(cls):
         super(RelationType, cls).__setup__()
         cls._error_messages.update({
-                'same_relation': 'You can not select the same relation as '
-                    'reverse relation.',
+                'same_relation': ('Relation Type "%s" cannot be linked to '
+                    'itself.'),
             })
 
     @classmethod
@@ -31,7 +31,7 @@ class RelationType(ModelSQL, ModelView):
 
     def check_reverse(self):
         if self.reverse and self.reverse.id == self.id:
-            self.raise_user_error('same_relation')
+            self.raise_user_error('same_relation', self.rec_name)
 
 
 class PartyRelation(ModelSQL):
