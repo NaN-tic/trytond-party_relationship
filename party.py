@@ -2,6 +2,7 @@ from sql import Union, As
 
 from trytond.pool import Pool, PoolMeta
 from trytond.model import ModelSQL, ModelView, fields
+from trytond.pyson import Eval
 
 __all__ = ['RelationType', 'PartyRelation', 'PartyRelationAll', 'Party']
 __metaclass__ = PoolMeta
@@ -13,25 +14,15 @@ class RelationType(ModelSQL, ModelView):
 
     name = fields.Char('Name', required=True, translate=True)
     reverse = fields.Many2One('party.relation.type', 'Reverse Relation',
-        ondelete='CASCADE')
+        ondelete='CASCADE', domain=[('id', '!=', Eval('id'))])
 
     @classmethod
     def __setup__(cls):
         super(RelationType, cls).__setup__()
-        cls._error_messages.update({
-                'same_relation': ('Relation Type "%s" cannot be linked to '
-                    'itself.'),
-            })
-
-    @classmethod
-    def validate(cls, records):
-        super(RelationType, cls).validate(records)
-        for record in records:
-            record.check_reverse()
-
-    def check_reverse(self):
-        if self.reverse and self.reverse.id == self.id:
-            self.raise_user_error('same_relation', self.rec_name)
+        cls._sql_constraints += [
+            ('id_reverse_different', 'CHECK(id <> reverse)',
+                'Relation Type cannot be linked to itself.'),
+            ]
 
 
 class PartyRelation(ModelSQL):
