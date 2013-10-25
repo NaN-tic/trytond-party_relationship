@@ -14,7 +14,7 @@ class RelationType(ModelSQL, ModelView):
 
     name = fields.Char('Name', required=True, translate=True)
     reverse = fields.Many2One('party.relation.type', 'Reverse Relation',
-        ondelete='CASCADE', domain=[('id', '!=', Eval('id'))])
+        ondelete='CASCADE', domain=[('id', '!=', Eval('id'))], depends=['id'])
 
     @classmethod
     def __setup__(cls):
