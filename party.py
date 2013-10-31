@@ -3,6 +3,7 @@ from sql import Union, As
 from trytond.pool import Pool, PoolMeta
 from trytond.model import ModelSQL, ModelView, fields
 from trytond.pyson import Eval
+from trytond.transaction import Transaction
 
 __all__ = ['RelationType', 'PartyRelation', 'PartyRelationAll', 'Party']
 __metaclass__ = PoolMeta
@@ -23,6 +24,28 @@ class RelationType(ModelSQL, ModelView):
             ('id_reverse_different', 'CHECK(id <> reverse)',
                 'Relation Type cannot be linked to itself.'),
             ]
+
+    @classmethod
+    def create(cls, vlist):
+        types = super(RelationType, cls).create(vlist)
+        for type_ in types:
+            reverse = type_.reverse
+            if reverse:
+                reverse.reverse = type_
+                reverse.save()
+        return types
+
+    @classmethod
+    def write(cls, types, values):
+        transaction = Transaction()
+        context = transaction.context
+        super(RelationType, cls).write(types, values)
+        if 'reverse' in values and not context.get('write_reverse', False):
+            with transaction.set_context(write_reverse=True):
+                reverse = cls(values['reverse'])
+                for type_ in types:
+                    reverse.reverse = type_
+                    reverse.save()
 
 
 class PartyRelation(ModelSQL):
