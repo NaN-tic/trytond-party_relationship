@@ -3,6 +3,6 @@
      copyright notices and license terms. -->
 <tree string="Relations" editable="top">
     <field name="from_"/>
-    <field name="to"/>
     <field name="type"/>
+    <field name="to"/>
 </tree>
