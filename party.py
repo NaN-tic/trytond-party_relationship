@@ -1,8 +1,7 @@
-from sql import Union, As
+from sql import Union, As, Column
 
 from trytond.pool import Pool, PoolMeta
 from trytond.model import ModelSQL, ModelView, fields
-from trytond.pyson import Eval
 from trytond.transaction import Transaction
 
 __all__ = ['RelationType', 'PartyRelation', 'PartyRelationAll', 'Party']
@@ -14,38 +13,7 @@ class RelationType(ModelSQL, ModelView):
     __name__ = 'party.relation.type'
 
     name = fields.Char('Name', required=True, translate=True)
-    reverse = fields.Many2One('party.relation.type', 'Reverse Relation',
-        ondelete='CASCADE', domain=[('id', '!=', Eval('id'))], depends=['id'])
-
-    @classmethod
-    def __setup__(cls):
-        super(RelationType, cls).__setup__()
-        cls._sql_constraints += [
-            ('id_reverse_different', 'CHECK(id <> reverse)',
-                'Relation Type cannot be linked to itself.'),
-            ]
-
-    @classmethod
-    def create(cls, vlist):
-        types = super(RelationType, cls).create(vlist)
-        for type_ in types:
-            reverse = type_.reverse
-            if reverse:
-                reverse.reverse = type_
-                reverse.save()
-        return types
-
-    @classmethod
-    def write(cls, types, values):
-        transaction = Transaction()
-        context = transaction.context
-        super(RelationType, cls).write(types, values)
-        if 'reverse' in values and not context.get('write_reverse', False):
-            with transaction.set_context(write_reverse=True):
-                reverse = cls(values['reverse'])
-                for type_ in types:
-                    reverse.reverse = type_
-                    reverse.save()
+    reverse = fields.Many2One('party.relation.type', 'Reverse Relation')
 
 
 class PartyRelation(ModelSQL):
@@ -57,15 +25,15 @@ class PartyRelation(ModelSQL):
     to = fields.Many2One('party.party', 'To', required=True, select=True,
         ondelete='CASCADE')
     type = fields.Many2One('party.relation.type', 'Type', required=True,
-        select=True, ondelete='CASCADE')
+        select=True)
 
 
 class PartyRelationAll(PartyRelation, ModelView):
     'Party Relation'
     __name__ = 'party.relation.all'
 
-    @staticmethod
-    def table_query():
+    @classmethod
+    def table_query(cls):
         pool = Pool()
         Relation = pool.get('party.relation')
         Type = pool.get('party.relation.type')
@@ -73,44 +41,139 @@ class PartyRelationAll(PartyRelation, ModelView):
         relation = Relation.__table__()
         type = Type.__table__()
 
-        main_columns = (relation.create_uid, relation.create_date,
-            relation.write_uid, relation.write_date)
-        cols = main_columns + (As(relation.id * 2, 'id'),
-            relation.from_, relation.to, relation.type)
-        query = relation.select(*cols)
+        tables = {
+            None: (relation, None)
+            }
+        reverse_tables = {
+            None: (relation, None),
+            'type': {
+                None: (type, (relation.type == type.id) &
+                    (type.reverse != None)),
+                },
+            }
 
-        cols = main_columns + (As(relation.id * 2 + 1, 'id'),
-            relation.to.as_('from_'), relation.from_.as_('to'), type.reverse)
-        reverse_query = relation.join(type, condition=relation.type == type.id)
-        reverse_query = reverse_query.select(*cols)
-        query = Union(query, reverse_query, all_=True)
+        columns = []
+        reverse_columns = []
+        for name, field in Relation._fields.iteritems():
+            if hasattr(field, 'get'):
+                continue
+            column, reverse_column = cls._get_column(tables, reverse_tables,
+                name)
+            columns.append(column)
+            reverse_columns.append(reverse_column)
 
-        return query
+        def convert_from(table, tables):
+            right, condition = tables[None]
+            if table:
+                table = table.join(right, condition=condition)
+            else:
+                table = right
+            for k, sub_tables in tables.iteritems():
+                if k is None:
+                    continue
+                table = convert_from(table, sub_tables)
+            return table
+
+        query = convert_from(None, tables).select(*columns)
+        reverse_query = convert_from(None, reverse_tables).select(
+            *reverse_columns)
+        return Union(query, reverse_query, all_=True)
+
+    @classmethod
+    def _get_column(cls, tables, reverse_tables, name):
+        table, _ = tables[None]
+        reverse_table, _ = reverse_tables[None]
+        if name == 'id':
+            return As(table.id * 2, name), As(reverse_table.id * 2 + 1, name)
+        elif name == 'from_':
+            return table.from_, reverse_table.to.as_(name)
+        elif name == 'to':
+            return table.to, reverse_table.from_.as_(name)
+        elif name == 'type':
+            reverse_type, _ = reverse_tables[name][None]
+            return table.type, reverse_type.reverse.as_(name)
+        else:
+            return Column(table, name), Column(reverse_table, name)
 
     @staticmethod
     def convert_instances(relations):
-        " Converts party.relation.all instances to party.relation "
+        "Converts party.relation.all instances to party.relation "
         pool = Pool()
         Relation = pool.get('party.relation')
-        return Relation.browse(list(set([int(x.id / 2) for x in relations])))
+        return Relation.browse([x.id // 2 for x in relations])
+
+    @property
+    def reverse_id(self):
+        if self.id % 2:
+            return self.id - 1
+        else:
+            return self.id + 1
 
     @classmethod
     def create(cls, vlist):
         pool = Pool()
         Relation = pool.get('party.relation')
-        return Relation.create(vlist)
+        relations = Relation.create(vlist)
+        return cls.browse([r.id * 2 for r in relations])
 
     @classmethod
-    def write(cls, relations, values):
+    def write(cls, all_records, values):
         pool = Pool()
         Relation = pool.get('party.relation')
-        return Relation.write(cls.convert_instances(relations), values)
+
+        # Increase transaction counter
+        Transaction().counter += 1
+
+        # Clean local cache
+        for record in all_records:
+            for record_id in (record.id, record.reverse_id):
+                local_cache = record._local_cache.get(record_id)
+                if local_cache:
+                    local_cache.clear()
+
+        # Clean cursor cache
+        for cache in Transaction().cursor.cache.itervalues():
+            if cls.__name__ in cache:
+                for record in all_records:
+                    for record_id in (record.id, record.reverse_id):
+                        if record_id in cache[cls.__name__]:
+                            cache[cls.__name__][record_id].clear()
+
+        reverse_values = values.copy()
+        if 'from_' in values and 'to' in values:
+            reverse_values['from_'], reverse_values['to'] = \
+                reverse_values['to'], reverse_values['from_']
+        elif 'from_' in values:
+            reverse_values['to'] = reverse_values.pop('from_')
+        elif 'to' in values:
+            reverse_values['from_'] = reverse_values.pop('to')
+        straight_relations = [r for r in all_records if not r.id % 2]
+        reverse_relations = [r for r in all_records if r.id % 2]
+        if straight_relations:
+            Relation.write(cls.convert_instances(straight_relations),
+                values)
+        if reverse_relations:
+            Relation.write(cls.convert_instances(reverse_relations),
+                reverse_values)
 
     @classmethod
     def delete(cls, relations):
         pool = Pool()
         Relation = pool.get('party.relation')
-        return Relation.delete(cls.convert_instances(relations))
+
+        # Increase transaction counter
+        Transaction().counter += 1
+
+        # Clean cursor cache
+        for cache in Transaction().cursor.cache.values():
+            for cache in (cache, cache.get('_language_cache', {}).values()):
+                if cls.__name__ in cache:
+                    for record in relations:
+                        for record_id in (record.id, record.reverse_id):
+                            if record_id in cache[cls.__name__]:
+                                del cache[cls.__name__][record_id]
+
+        Relation.delete(cls.convert_instances(relations))
 
 
 class Party:
